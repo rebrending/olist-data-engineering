@@ -1,65 +1,63 @@
 import os
+import logging
 import pandas as pd
 import psycopg2
+from psycopg2.extras import execute_values
 
-DB_PARAMS = {
-    "host": "localhost",
-    "port": 5433,
-    "database": "analytics_db",
-    "user": "admin",
-    "password": "admin_password"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+DB_CONFIG = {
+    "host": os.environ.get("DB_HOST", "de_postgres"),
+    "port": os.environ.get("DB_PORT", 5432),
+    "user": os.environ.get("DB_USER", "admin"),
+    "password": os.environ.get("DB_PASSWORD", "admin_password"),
+    "dbname": os.environ.get("DB_NAME", "analytics_db")
 }
 
-DATA_DIR = os.path.expanduser("~/data_engineering/data")
+DATA_DIR = os.environ.get("DATA_DIR", "/opt/airflow/data")
 
-datasets = {
-    "olist_customers_dataset.csv": "customers",
-    "olist_orders_dataset.csv": "orders",
-    "olist_order_items_dataset.csv": "order_items"
+TABLE_FILES_MAPPING = {
+    "raw.olist_customers": "olist_customers_dataset.csv",
+    "raw.olist_orders": "olist_orders_dataset.csv",
+    "raw.olist_order_payments": "olist_order_payments_dataset.csv"
 }
 
-def main():
-    conn = psycopg2.connect(**DB_PARAMS)
-    cur = conn.cursor()
-    
+def load_csv_to_postgres():
+    conn = None
     try:
-        # Создаем схему raw
-        cur.execute("CREATE SCHEMA IF NOT EXISTS raw;")
-        conn.commit()
-        print("Схема 'raw' успешно проверена/создана.")
-        
-        for file_name, table_name in datasets.items():
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        logging.INFO("Successfully connected to PostgreSQL DWH.")
+
+        for table_name, file_name in TABLE_FILES_MAPPING.items():
             file_path = os.path.join(DATA_DIR, file_name)
-            
             if not os.path.exists(file_path):
-                print(f"⚠️ Файл {file_name} не найден, пропускаем.")
+                logging.warning(f"File {file_path} not found. Skipping {table_name}...")
                 continue
-                
-            print(f"Загрузка {file_name} в таблицу raw.{table_name}...")
+
+            logging.info(f"Loading {file_name} into {table_name}...")
+            df = pd.read_csv(file_path)
+            df = df.where(pd.notnull(df), None)
+
+            cur.execute(f"TRUNCATE TABLE {table_name};")
             
-            df = pd.read_csv(file_path, nrows=5)
+            columns = list(df.columns)
+            query = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES %s"
             
-            # Указываем кавычки для безопасности
-            columns = [f'"{col}" TEXT' for col in df.columns]
-            create_table_sql = f'DROP TABLE IF EXISTS raw."{table_name}"; CREATE TABLE raw."{table_name}" ({", ".join(columns)});'
-            
-            cur.execute(create_table_sql)
+            records = [tuple(x) for x in df.to_numpy()]
+            execute_values(cur, query, records, page_size=10000)
             conn.commit()
-            
-            # ВАЖНО: говорим сессии Postgres смотреть внутрь схемы raw
-            cur.execute("SET search_path TO raw, public;")
-            
-            with open(file_path, 'r', encoding='utf-8') as f:
-                next(f) 
-                # Теперь передаем только имя таблицы, без "raw."
-                cur.copy_from(f, table_name, sep=',', null="")
-                
-            conn.commit()
-            print(f"✅ Успешно загружено в raw.{table_name}.")
-            
+            logging.info(f"Loaded {len(records)} records into {table_name}.")
+
+    except Exception as e:
+        logging.error(f"ETL Pipeline Error: {e}")
+        if conn:
+            conn.rollback()
+        raise
     finally:
-        cur.close()
-        conn.close()
+        if conn:
+            conn.close()
+            logging.info("Database connection closed.")
 
 if __name__ == "__main__":
-    main()
+    load_csv_to_postgres()

@@ -4,3 +4,8 @@ __pycache__/
 *.csv
 *.log
 .docker/
+*:Zone.Identifier
+*:Zone.Identifier
+data/*.csv
+venv/
+airflow_env/
