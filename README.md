@@ -64,7 +64,7 @@
 
 1. **Клонируйте репозиторий:**
 
-       git clone https://github.com/ВАШ_ГИТХАБ_НИК/olist-data-engineering.git
+       git clone https://github.com/rebrending/olist-data-engineering.git
        cd olist-data-engineering
 
 2. **Подготовьте данные:**
